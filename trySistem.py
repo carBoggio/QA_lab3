@@ -1,126 +1,66 @@
-from PIL import Image
-import cv2
-import numpy as np
-from service.detection.retina_face import RetinaFaceDetector
-from service.recognition.ArcFaceRecognition import ArcFaceDeepFaceRecognition
 import os
+from PIL import Image
+from collections import defaultdict
 
-def test_recognition_system():
-    """Prueba el sistema completo de reconocimiento"""
-    print("=== Probando Sistema de Reconocimiento ===")
+from service.recognition_pipeline import FaceRecognitionPipeline
+from service.clasifier.clasifier import get_knn_classifier
+
+# Ruta base de las imágenes
+BASE_DIR = "pictures"
+USERS = ["lucas", "pedro"]
+IMAGE_COUNT = 5  # número de imágenes por persona
+
+# Inicializar pipeline y clasificador
+pipeline = FaceRecognitionPipeline()
+classifier = get_knn_classifier()
+
+def cargar_embeddings():
+    embeddings_dict = defaultdict(list)
+
+    for user in USERS:
+        user_dir = os.path.join(BASE_DIR, user)
+        for i in range(1, IMAGE_COUNT + 1):
+            image_path = os.path.join(user_dir, f"{user}{i}.jpg")
+            try:
+                with Image.open(image_path).convert("RGB") as img:
+                    embedding, confidence, error = pipeline.process_image(img)
+                    if embedding is not None:
+                        embeddings_dict[user].append(embedding)
+                    else:
+                        print(f"[!] No se pudo procesar {image_path}: {error}")
+            except Exception as e:
+                print(f"[!] Error cargando imagen {image_path}: {e}")
     
-    detector = RetinaFaceDetector()
-    recognition = ArcFaceDeepFaceRecognition()
-    
-    # 1. Procesar fotos individuales de Pedro
-    pedro_embeddings = []
-    print("\n--- Procesando fotos de Pedro ---")
-    for i in range(1, 6):
-        photo_path = f"pictures/pedro/pedro{i}.jpg"
-        if os.path.exists(photo_path):
-            image = Image.open(photo_path)
-            faces = detector.get_faces_choped_and_aligned(image)
-            
-            for face in faces:
-                embedding = recognition.generate_embedding(face)
-                if embedding.size > 0:
-                    pedro_embeddings.append(embedding)
-                    
-            print(f"pedro{i}.jpg: {len(faces)} caras encontradas")
-    
-    # 2. Procesar fotos individuales de Lucas
-    lucas_embeddings = []
-    print("\n--- Procesando fotos de Lucas ---")
-    for i in range(1, 6):
-        photo_path = f"pictures/lucas/lucas{i}.jpg"
-        if os.path.exists(photo_path):
-            image = Image.open(photo_path)
-            faces = detector.get_faces_choped_and_aligned(image)
-            
-            for face in faces:
-                embedding = recognition.generate_embedding(face)
-                if embedding.size > 0:
-                    lucas_embeddings.append(embedding)
-                    
-            print(f"lucas{i}.jpg: {len(faces)} caras encontradas")
-    
-    print(f"\nEmbeddings de Pedro: {len(pedro_embeddings)}")
-    print(f"Embeddings de Lucas: {len(lucas_embeddings)}")
-    
-    # 3. Procesar foto de clase
-    print("\n--- Procesando foto de clase ---")
-    class_photo = "pictures/fotos_clase/pedro_lucas.jpg"
-    
-    if os.path.exists(class_photo):
-        image = Image.open(class_photo)
-        class_faces = detector.get_faces_choped_and_aligned(image)
-        
-        class_embeddings = []
-        for face in class_faces:
-            embedding = recognition.generate_embedding(face)
-            if embedding.size > 0:
-                class_embeddings.append(embedding)
-        
-        print(f"Caras en foto de clase: {len(class_faces)}")
-        print(f"Embeddings extraídos: {len(class_embeddings)}")
-        
-        # 4. Comparar cada cara de la clase con Pedro y Lucas
-        print("\n--- Resultados de Reconocimiento ---")
-        
-        for i, class_embedding in enumerate(class_embeddings):
-            print(f"\nCara {i+1}:")
-            
-            # Comparar con Pedro
-            pedro_similarities = []
-            for pedro_emb in pedro_embeddings:
-                similarity = recognition.compute_similarity(class_embedding, pedro_emb)
-                pedro_similarities.append(similarity)
-            
-            # Comparar con Lucas  
-            lucas_similarities = []
-            for lucas_emb in lucas_embeddings:
-                similarity = recognition.compute_similarity(class_embedding, lucas_emb)
-                lucas_similarities.append(similarity)
-            
-            # Mejores matches
-            best_pedro = max(pedro_similarities) if pedro_similarities else 0
-            best_lucas = max(lucas_similarities) if lucas_similarities else 0
-            avg_pedro = np.mean(pedro_similarities) if pedro_similarities else 0
-            avg_lucas = np.mean(lucas_similarities) if lucas_similarities else 0
-            
-            print(f"  Pedro - Mejor: {best_pedro:.3f}, Promedio: {avg_pedro:.3f}")
-            print(f"  Lucas - Mejor: {best_lucas:.3f}, Promedio: {avg_lucas:.3f}")
-            
-            # Determinar identificación
-            if best_pedro > best_lucas and best_pedro > 0.6:
-                print(f"  -> Identificado como: PEDRO (confianza: {best_pedro:.3f})")
-            elif best_lucas > best_pedro and best_lucas > 0.6:
-                print(f"  -> Identificado como: LUCAS (confianza: {best_lucas:.3f})")
-            elif max(best_pedro, best_lucas) > 0.4:
-                name = "PEDRO" if best_pedro > best_lucas else "LUCAS"
-                conf = max(best_pedro, best_lucas)
-                print(f"  -> Posiblemente: {name} (confianza: {conf:.3f})")
+    return embeddings_dict
+
+def main():
+    print("[+] Generando embeddings de entrenamiento...")
+    embeddings = cargar_embeddings()
+    print(embeddings)
+    print("[+] Entrenando clasificador...")
+    success = classifier.train_from_dict(embeddings)
+    if not success:
+        print("[!] Falló el entrenamiento del clasificador.")
+        return
+
+    print("[+] Clasificador entrenado con éxito.")
+
+    # Probar reconocimiento con una imagen nueva
+    test_image_path = "pictures/fotos_clase/pedro_lucas.jpg"
+    try:
+        with Image.open(test_image_path).convert("RGB") as img:
+            embedding, _, error = pipeline.process_image(img)
+            if embedding is not None:
+                prediction = classifier.predict(embedding)
+                print(prediction)
+                if prediction:
+                    print(f"[✓] Persona reconocida: {prediction}")
+                else:
+                    print("[✗] No se pudo reconocer la persona con suficiente confianza.")
             else:
-                print(f"  -> NO IDENTIFICADO")
-        
-        # 5. Mostrar las caras detectadas
-        print("\n--- Mostrando caras detectadas ---")
-        for i, face in enumerate(class_faces):
-            face_array = np.array(face)
-            face_bgr = cv2.cvtColor(face_array, cv2.COLOR_RGB2BGR)
-            cv2.imshow(f'Cara {i+1} de la clase', face_bgr)
-        
-        print("Presiona cualquier tecla para cerrar las ventanas...")
-        cv2.waitKey(0)
-        cv2.destroyAllWindows()
-    
-    else:
-        print(f"No se encontró la foto de clase: {class_photo}")
+                print(f"[!] Error procesando imagen: {error}")
+    except Exception as e:
+        print(f"[!] Error abriendo imagen de prueba: {e}")
 
 if __name__ == "__main__":
-    try:
-        test_recognition_system()
-    except Exception as e:
-        print(f"Error: {e}")
-        import traceback
-        traceback.print_exc()
+    main()

@@ -32,9 +32,7 @@ class Recognition(ABC):
         pass
 
     @abstractmethod
-    def compute_similarity(
-        self, embedding1: np.ndarray, embedding2: np.ndarray
-    ) -> float:
+    def predict(self, embedding: np.ndarray) -> float:
         """
         Compute similarity between two embeddings.
 

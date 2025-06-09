@@ -4,7 +4,7 @@ import numpy as np
 from PIL import Image
 import io
 from .detection.retina_face import RetinaFaceDetector
-from .recognition.deepface_recognition import DeepFaceRecognition
+from .recognition.ArcFaceRecognition import ArcFaceDeepFaceRecognition
 
 logger = logging.getLogger(__name__)
 
@@ -12,7 +12,7 @@ logger = logging.getLogger(__name__)
 class FaceRecognitionPipeline:
     def __init__(self):
         self.detector = RetinaFaceDetector()
-        self.recognition = DeepFaceRecognition()
+        self.recognition = ArcFaceDeepFaceRecognition()
 
     def compare_embeddings(self, embedding1: np.ndarray, embedding2: np.ndarray) -> float:
         return self.recognition.compute_similarity(embedding1, embedding2)

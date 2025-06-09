@@ -4,17 +4,26 @@ import numpy as np
 from typing import List
 from deepface import DeepFace
 from .Recognition import Recognition
-
+from ..clasifier.clasifier import KNNFaceClassifier
+from torchvision import transforms
 
 class ArcFaceDeepFaceRecognition(Recognition):
     def __init__(self, model_name: str = 'ArcFace'):
         self.model_name = model_name
-
+        self.knn_classifier = KNNFaceClassifier()
+        self.epsilon = 1e-10  # Pequeño valor para evitar división por cero
+        self.transform = transforms.Compose([
+            transforms.Resize(112, interpolation=transforms.InterpolationMode.LANCZOS),
+            transforms.CenterCrop(112),
+            transforms.ToTensor(),
+            transforms.Lambda(lambda x: x.numpy() * 255)
+        ])
     def generate_embedding(self, face_image: Image.Image) -> np.ndarray:
         """
         Generate an embedding vector for a cropped face image.
         """
         try:
+            face_image = face_image.resize((112, 112), Image.LANCZOS)
             face_array = np.array(face_image)
             
             result = DeepFace.represent(
@@ -45,23 +54,21 @@ class ArcFaceDeepFaceRecognition(Recognition):
                 embeddings.append(embedding)
         return embeddings
 
-    def compute_similarity(self, embedding1: np.ndarray, embedding2: np.ndarray) -> float:
+    def predict(self, embedding: np.ndarray) -> float:
         """
         Compute similarity between two embeddings using cosine similarity.
         """
         # Normalizar embeddings antes de comparar
-        emb1_normalized = embedding1 #self._normalize_l2(embedding1)
-        emb2_normalized = embedding2 #self._normalize_l2(embedding2)
+        emb_normalized = self._normalize_l2(embedding)
         
-        # Cosine similarity
-        dot_product = np.dot(emb1_normalized, emb2_normalized)
-        return float(dot_product)
+        prediction = self.knn_classifier.predict(emb_normalized)
+        
+        return prediction
 
     def _normalize_l2(self, embedding: np.ndarray) -> np.ndarray:
         """
         Normalización L2 del embedding
         """
         norm = np.linalg.norm(embedding)
-        if norm == 0:
-            return embedding
-        return embedding / norm
+        
+        return embedding / (norm + self.epsilon)
