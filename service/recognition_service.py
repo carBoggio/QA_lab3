@@ -4,21 +4,15 @@ from identidad.models import Student
 from academico.models import Session
 from ..pipeline_manager import get_pipeline
 from identidad.serializers import process_profile_image_url
+from .BaseFaceRecognitionPipeline import BaseFaceRecognitionPipeline
 import logging
 
 logger = logging.getLogger(__name__)
 
 
 class RecognitionService:
-    """
-    Service class that handles facial recognition logic.
-    Follows SOLID principles by separating recognition concerns from the API endpoint.
-    """
-
     def __init__(self):
-        self.pipeline = get_pipeline()
-        self.similarity_threshold = 0.6
-        self.possible_present_threshold = 0.4
+        self.pipeline: BaseFaceRecognitionPipeline = get_pipeline()
 
     def recognize_students_in_session(
         self, image_file, session_id: str, request=None
@@ -37,21 +31,21 @@ class RecognitionService:
         # Verify session exists
         session = get_object_or_404(Session, id=session_id)
 
-        # Get enrolled students with face embeddings
-        enrolled_students_data = self._get_enrolled_students_with_embeddings(session)
+        # Get enrolled students
+        enrolled_students = self._get_enrolled_students(session)
 
-        if not enrolled_students_data:
-            raise ValueError(
-                "No hay estudiantes con embeddings faciales registrados en esta sesión"
-            )
+        if not enrolled_students:
+            raise ValueError("No hay estudiantes inscritos en esta sesión")
 
-        # Process the image to get face embeddings
-        face_results = self.pipeline.process_all_faces(image_file)
+        # Use the new pipeline method to predict all people identities
+        recognition_results = self.pipeline.predict_people_identity_from_picture(image_file)
+        logger.info(f"Pipeline predicted {len(recognition_results)} people in image")
 
-        # Match faces with enrolled students
-        recognition_results = self._match_faces_with_students(
-            face_results, enrolled_students_data, request
+        # Match predictions with enrolled students
+        matched_results = self._match_predictions_with_students(
+            recognition_results, enrolled_students, request
         )
+        logger.info(f"Matched results: {matched_results}")
 
         # Build response
         result = {
@@ -61,147 +55,105 @@ class RecognitionService:
                 "session_date": session.session_date.strftime("%d/%m/%Y"),
                 "session_time": f"{session.start_time.strftime('%H:%M')} - {session.end_time.strftime('%H:%M')}",
             },
-            "total_faces_detected": len(face_results),
-            "total_enrolled_students": len(enrolled_students_data),
-            "students": recognition_results["all_students"],
+            "total_faces_detected": len(recognition_results),
+            "total_enrolled_students": len(enrolled_students),
+            "students": matched_results["all_students"],
             "recognition_summary": {
-                "recognized_count": recognition_results["recognized_count"],
-                "possible_present_count": recognition_results["possible_present_count"],
-                "absent_count": recognition_results["absent_count"],
-                "unrecognized_faces": recognition_results["unrecognized_count"],
+                "recognized_count": matched_results["recognized_count"],
+                "possible_present_count": matched_results["possible_present_count"],
+                "absent_count": matched_results["absent_count"],
+                "unrecognized_faces": matched_results["unrecognized_count"],
             },
         }
 
         return result
 
-    def _get_enrolled_students_with_embeddings(
-        self, session: Session
-    ) -> Dict[str, Dict]:
+    def _get_enrolled_students(self, session: Session) -> Dict[str, Student]:
         """
-        Gets all students enrolled in the session's course that have face embeddings.
-
-        Returns:
-            Dict mapping student_id to student data including embedding
+        Gets all students enrolled in the session's course.
         """
         students = Student.objects.filter(
             enrollments__section=session.course
-        ).prefetch_related("person_faces")
+        ).distinct()  # Evita duplicados
+        return {str(student.id): student for student in students}
 
-        student_data = {}
-
-        for student in students:
-            faces = student.person_faces.all()
-            if faces:
-                # Use the most recent embedding
-                latest_face = faces.order_by("-created_at").first()
-                if latest_face and latest_face.embedding is not None:
-                    student_data[str(student.id)] = {
-                        "student": student,
-                        "embedding": latest_face.embedding,
-                        "face_count": faces.count(),
-                    }
-
-        return student_data
-
-    def _match_faces_with_students(
-        self, face_results: List, enrolled_students_data: Dict, request=None
+    def _match_predictions_with_students(
+        self, recognition_results: List[Tuple[str, str]], enrolled_students: Dict[str, Student], request=None
     ) -> Dict:
         """
-        Matches detected faces with enrolled students.
-
-        Args:
-            face_results: List of (embedding, confidence, error) from pipeline
-            enrolled_students_data: Dict of enrolled students with embeddings
-            request: The HTTP request object (optional, needed for proper URL building)
-
-        Returns:
-            Dict with all students categorized by status and counts
+        Matches pipeline predictions with enrolled students.
         """
-        # Track students and their best matches
-        student_matches = (
-            {}
-        )  # student_id -> (status, confidence, face_detection_confidence)
+        identified_students = {}  # Dict[student_id, presence_status]
         unrecognized_faces = 0
 
-        for embedding, face_detection_confidence, error in face_results:
-            if error:
-                logger.warning(f"Error processing face: {error}")
+        for person_name, status in recognition_results:
+            if person_name == "no_identificado" or person_name == "presente":
+                # Person detected but not identified or not enrolled
                 unrecognized_faces += 1
+                logger.info(f"❓ Face detected but person not identified: {person_name}")
                 continue
 
-            if embedding is None:
-                unrecognized_faces += 1
-                continue
-
-            # Find best match among enrolled students for this face
-            best_student_id = None
-            best_similarity = -1
-
-            for student_id, student_data in enrolled_students_data.items():
-                stored_embedding = student_data["embedding"]
-                similarity = self.pipeline.recognition.compute_similarity(
-                    embedding, stored_embedding
+            # Check if the predicted person is enrolled in this session
+            if person_name in enrolled_students:
+                # Student was identified and is enrolled in this session
+                if person_name in identified_students:
+                    # Si el estudiante ya fue identificado, actualizamos su estado solo si es más favorable
+                    current_status = identified_students[person_name]
+                    # Definimos el orden de prioridad: presente > posible_presente > ausente
+                    status_priority = {
+                        "presente": 2,
+                        "posible_presente": 1,
+                        "ausente": 0,
+                    }
+                    if (
+                        status_priority[status]
+                        > status_priority[current_status]
+                    ):
+                        identified_students[person_name] = status
+                else:
+                    identified_students[person_name] = status
+                logger.info(
+                    f"✅ Student identified: {person_name} with status {status}"
                 )
-
-                if similarity > best_similarity:
-                    best_similarity = similarity
-                    best_student_id = student_id
-
-            # Determine status based on similarity and update student if this is a better match
-            if best_student_id and best_similarity >= self.possible_present_threshold:
-                # Determine status
-                if best_similarity >= self.similarity_threshold:
-                    status = "present"
-                else:  # between 0.4 and 0.6
-                    status = "possible_present"
-
-                # Only update if this is a better match than what we already have
-                if (
-                    best_student_id not in student_matches
-                    or student_matches[best_student_id][1] < best_similarity
-                ):
-                    student_matches[best_student_id] = (
-                        status,
-                        best_similarity,
-                        face_detection_confidence,
-                    )
             else:
+                # Person identified but not enrolled in this session
                 unrecognized_faces += 1
+                logger.info(
+                    f"⚠️ Person {person_name} not enrolled in this session"
+                )
 
         # Build all students list
         all_students = []
-        recognized_count = 0
-        possible_present_count = 0
+        recognized_count = len(
+            [s for s in identified_students.values() if s == "presente"]
+        )
+        possible_present_count = len(
+            [s for s in identified_students.values() if s == "posible_presente"]
+        )
 
-        # Add matched students
-        for student_id, (
-            status,
-            confidence,
-            face_detection_confidence,
-        ) in student_matches.items():
-            student_data = enrolled_students_data[student_id]
-            student = student_data["student"]
-
+        # Add identified students with their presence status
+        for student_id, presence_status in identified_students.items():
+            student = enrolled_students[student_id]
+            status = (
+                "present"
+                if presence_status == "presente"
+                else "possible_present"
+                if presence_status == "posible_presente"
+                else "absent"
+            )
             all_students.append(
                 {
                     "id": str(student.id),
                     "name": f"{student.user.first_name} {student.user.last_name}",
                     "status": status,
-                    "confidence": round(confidence, 3),
-                    "face_detection_confidence": round(face_detection_confidence, 3),
+                    "method": "facial_recognition",
                     "profile_image": process_profile_image_url(student, request),
                 }
             )
 
-            if status == "present":
-                recognized_count += 1
-            elif status == "possible_present":
-                possible_present_count += 1
-
-        # Add absent students (enrolled but not matched)
-        for student_id, student_data in enrolled_students_data.items():
-            if student_id not in student_matches:
-                student = student_data["student"]
+        # Add absent students (enrolled but not identified)
+        for student_id, student in enrolled_students.items():
+            if student_id not in identified_students:
                 all_students.append(
                     {
                         "id": str(student.id),
@@ -211,7 +163,9 @@ class RecognitionService:
                     }
                 )
 
-        absent_count = len(enrolled_students_data) - len(student_matches)
+        absent_count = (
+            len(enrolled_students) - recognized_count - possible_present_count
+        )
 
         return {
             "all_students": all_students,
@@ -220,3 +174,118 @@ class RecognitionService:
             "absent_count": absent_count,
             "unrecognized_count": unrecognized_faces,
         }
+
+    def get_detailed_session_analysis(self, image_file, session_id: str) -> Dict:
+        """
+        Método adicional que aprovecha las nuevas capacidades del pipeline.
+        Proporciona análisis más detallado usando los nuevos métodos.
+        """
+        session = get_object_or_404(Session, id=session_id)
+        enrolled_students = self._get_enrolled_students(session)
+
+        # Usar el método de predicción del nuevo pipeline
+        recognition_results = self.pipeline.predict_people_identity_from_picture(image_file)
+
+        # Usar el método de dibujo de caras
+        annotated_image = self.pipeline.draw_faces_in_picture(image_file)
+
+        return {
+            "session_id": str(session.id),
+            "total_enrolled": len(enrolled_students),
+            "face_analysis": {
+                "faces_detected": len(recognition_results),
+                "recognition_results": recognition_results,
+            },
+            "face_count_verification": len(recognition_results),
+            "pipeline_status": {
+                "annotated_image_available": annotated_image is not None,
+            },
+        }
+
+    def verify_single_student_attendance(
+        self, image_file, student_id: str, session_id: str
+    ) -> Dict:
+        """
+        Verifica si un estudiante específico está presente en la imagen.
+        Usa el nuevo método de extracción de embedding del pipeline.
+        """
+        session = get_object_or_404(Session, id=session_id)
+        student = get_object_or_404(Student, id=student_id)
+
+        # Verificar si el estudiante está inscrito en la sesión
+        is_enrolled = Student.objects.filter(
+            id=student_id, enrollments__section=session.course
+        ).exists()
+
+        if not is_enrolled:
+            return {
+                "student_id": student_id,
+                "is_present": False,
+                "reason": "student_not_enrolled",
+                "confidence": "sin_datos",
+            }
+
+        # Extraer embedding de la cara más grande en la imagen
+        embedding = self.pipeline.extract_embedding_from_single_largest_face_image(image_file)
+        
+        if embedding is None:
+            return {
+                "student_id": student_id,
+                "is_present": False,
+                "reason": "no_face_detected",
+                "confidence": "sin_datos",
+            }
+
+        # Usar el clasificador para predecir la identidad
+        prediction_result = self.pipeline.classifier.predict(embedding)
+        
+        if prediction_result is None:
+            return {
+                "student_id": student_id,
+                "is_present": False,
+                "reason": "not_identified",
+                "confidence": "sin_datos",
+            }
+
+        predicted_student_id, presence_status = prediction_result
+        
+        is_present = (predicted_student_id == student_id and presence_status == "presente")
+        confidence = presence_status if predicted_student_id == student_id else "wrong_person"
+
+        return {
+            "student_id": student_id,
+            "student_name": f"{student.user.first_name} {student.user.last_name}",
+            "is_present": is_present,
+            "confidence": confidence,
+            "session_id": str(session.id),
+        }
+
+    def retrain_pipeline_classifier(self) -> Dict:
+        """
+        Fuerza el re-entrenamiento del clasificador del pipeline.
+        Útil cuando se agregan nuevos estudiantes.
+        """
+        try:
+            success = self.pipeline.classifier.train()
+            return {
+                "retrain_successful": success,
+                "message": (
+                    "Clasificador re-entrenado exitosamente"
+                    if success
+                    else "Error en re-entrenamiento"
+                ),
+            }
+        except Exception as e:
+            logger.error(f"Error retraining classifier: {str(e)}")
+            return {"retrain_successful": False, "message": f"Error: {str(e)}"}
+
+    def get_annotated_image(self, image_file) -> bytes:
+        """
+        Obtiene la imagen con las caras dibujadas usando el nuevo pipeline.
+        """
+        try:
+            annotated_image = self.pipeline.draw_faces_in_picture(image_file)
+            return annotated_image
+        except Exception as e:
+            logger.error(f"Error getting annotated image: {str(e)}")
+            return None

@@ -3,7 +3,7 @@ from PIL import Image, ImageDraw
 import io
 from .retina_face import RetinaFaceDetector
 
-from service.utils import convert_to_webp, drawFaces
+from ..utils import convert_to_webp, drawFaces
 
 
 class FaceDetection:
@@ -29,6 +29,3 @@ class FaceDetection:
         """
         # Simulación: retorna una lista con una cara ficticia
         return self.face_detection.detect_faces(image_file)
-
-
-    
