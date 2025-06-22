@@ -12,7 +12,7 @@ class BaseFaceClassifier(ABC):
         self.is_trained = False
 
     @abstractmethod
-    def train(self, embeddings_dict: Dict[str, List[np.ndarray]]) -> bool:
+    def train(self) -> bool:
         """
         Entrena el clasificador.
 

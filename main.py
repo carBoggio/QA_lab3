@@ -1,5 +1,5 @@
 from sklearn.neighbors import KNeighborsClassifier
-from service.clasifier.knn_classifier import get_knn_classifier
+from service.clasifier.SVMFaceClassifier import get_svm_classifier
 from service.utils import load_from_database
 from service.recognition_pipeline import FaceRecognitionPipeline
 from PIL import Image
@@ -17,49 +17,58 @@ logger = logging.getLogger(__name__)
 # Crear pipeline
 pipeline = FaceRecognitionPipeline()
 
-# Cargar embeddings desde la base de datos
-embeddings_dict = load_from_database()
+# Entrenar el clasificador
+classifier = get_svm_classifier()
+classifier.train()
 
-# Procesar todas las imágenes de Larisa
-larisa_folder = "media/lab2/Larisa"
-larisa_images = [
-    "Larisa.jpg",
-    "Larisa2.jpg", 
-    "Larisa3.jpg",
-    "Larisa4.jpg",
-    "Larisa5.jpg"
-]
-
-print("🔍 Procesando imágenes de Larisa...")
-print("=" * 50)
-
-for i, image_name in enumerate(larisa_images, 1):
+def test_face_recognition():
+    """Función para probar el reconocimiento facial con test1, test2 y test3"""
     
-    image_path = os.path.join(larisa_folder, image_name)
-
-    if os.path.exists(image_path):
-        print(f"\n📸 Procesando imagen {i}/5: {image_name}")
-        print(f"📁 Ruta: {image_path}")
+    # Rutas de las imágenes de test
+    test_images = [
+        "media/lab1/test1.jpg",
+        "media/lab1/test2.jpg", 
+        "media/lab1/test3.jpg"
+    ]
+    
+    for i, test_image_path in enumerate(test_images, 1):
+        logger.info(f"\n{'='*50}")
+        logger.info(f"PROBANDO TEST{i}")
+        logger.info(f"{'='*50}")
+        
+        if not os.path.exists(test_image_path):
+            logger.error(f"No se encontró la imagen: {test_image_path}")
+            continue
         
         try:
-            # Cargar imagen
-            img = Image.open(image_path)
-            print(f"📐 Tamaño original: {img.size}")
+            # Cargar la imagen
+            logger.info(f"Cargando imagen: {test_image_path}")
+            test_image = Image.open(test_image_path)
             
-            # Extraer embedding
-            embedding = pipeline.extract_embedding_from_single_largest_face_image(img)
+            # Probar reconocimiento con el método que reconoce gente
+            logger.info("Iniciando reconocimiento facial...")
+            results = pipeline.predict_people_identity_from_picture(
+                test_image, 
+                show_visualization=True
+            )
             
-            if embedding is not None:
-                print(f"✅ Embedding extraído exitosamente - Tamaño: {embedding.shape}")
-            else:
-                print("❌ No se pudo extraer embedding")
-                
+            # Mostrar resultados
+            logger.info(f"=== RESULTADOS DEL RECONOCIMIENTO TEST{i} ===")
+            logger.info(f"Total de caras detectadas: {len(results)}")
+            
+            for j, (name, confidence) in enumerate(results):
+                logger.info(f"Cara {j+1}: {name} (confianza: {confidence})")
+            
+            logger.info(f"=== FIN DE RESULTADOS TEST{i} ===")
+            
         except Exception as e:
-            print(f"❌ Error procesando {image_name}: {e}")
-    else:
-        print(f"⚠️ Imagen no encontrada: {image_path}")
+            logger.error(f"Error durante el test{i}: {e}")
+    
+    logger.info(f"\n{'='*50}")
+    logger.info("TODOS LOS TESTS COMPLETADOS")
+    logger.info(f"{'='*50}")
 
-print("\n" + "=" * 50)
-print("🎉 Procesamiento completado!")
-print("💡 Presiona cualquier tecla para cerrar las ventanas de OpenCV...")
-input()
+if __name__ == "__main__":
+    test_face_recognition()
+
+

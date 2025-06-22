@@ -40,14 +40,20 @@ class MediaPipeFaceNormalizer(BasicNormalizer):
             num_faces=1)
         self.detector = vision.FaceLandmarker.create_from_options(options)
         
-        # Define face contour indices (MediaPipe's face mesh landmarks)
-        # These indices define the outer boundary of the face
+        # Define complete face contour indices (MediaPipe's face mesh landmarks)
+        # Incluye todo el perímetro facial: frente, sienes, mejillas, mandíbula y barbilla
         self.FACE_OUTLINE_INDICES = [
-            10,  338, 297, 332, 284, 251, 389, 356, 454, 323, 
-            361, 288, 397, 365, 379, 378, 400, 377, 152, 148, 
-            176, 149, 150, 136, 172, 58,  132, 93,  234, 127, 
-            162, 21,  54,  103, 67,  109
+            # Contorno facial completo en orden
+            10, 338, 297, 332, 284, 251, 389, 356, 454, 323, 361, 288,
+            397, 365, 379, 378, 400, 377, 152, 148, 176, 149, 150, 136,
+            172, 58, 132, 93, 234, 127, 162, 21, 54, 103, 67, 109, 10
         ]
+        
+        # Landmarks adicionales para incluir más área facial
+        self.FOREHEAD_INDICES = [9, 10, 151, 337, 299, 333, 298, 301]
+        self.CHIN_INDICES = [175, 181, 84, 17, 314, 405, 320, 307]
+        self.LEFT_CHEEK_INDICES = [116, 117, 118, 119, 120, 121, 126, 142]
+        self.RIGHT_CHEEK_INDICES = [345, 346, 347, 348, 349, 350, 355, 371]
     
     def _ensure_model_exists(self):
         """Download the model if it doesn't exist locally."""
@@ -92,18 +98,42 @@ class MediaPipeFaceNormalizer(BasicNormalizer):
         h, w = image.shape[:2]
         points = [(int(lm.x * w), int(lm.y * h)) for lm in landmarks]
         
-        # Get the face outline points
-        face_outline = [points[i] for i in self.FACE_OUTLINE_INDICES]
-        
         # Create a blank mask
         mask = np.zeros((h, w), dtype=np.uint8)
         
-        # Draw convex hull of face outline
-        hull = cv2.convexHull(np.array(face_outline))
-        cv2.fillConvexPoly(mask, hull, 255)
+        # Método 1: Crear máscara más inclusiva usando múltiples regiones
+        all_face_points = []
         
-        # Optional: Add some blur to smooth the mask edges
-        mask = cv2.GaussianBlur(mask, (15, 15), 0)
+        # Agregar contorno principal
+        face_outline = [points[i] for i in self.FACE_OUTLINE_INDICES if i < len(points)]
+        all_face_points.extend(face_outline)
+        
+        # Agregar puntos de frente para incluir más área superior
+        forehead_points = [points[i] for i in self.FOREHEAD_INDICES if i < len(points)]
+        all_face_points.extend(forehead_points)
+        
+        # Agregar puntos de barbilla para incluir más área inferior
+        chin_points = [points[i] for i in self.CHIN_INDICES if i < len(points)]
+        all_face_points.extend(chin_points)
+        
+        # Agregar puntos de mejillas para incluir más área lateral
+        cheek_points = [points[i] for i in self.LEFT_CHEEK_INDICES + self.RIGHT_CHEEK_INDICES if i < len(points)]
+        all_face_points.extend(cheek_points)
+        
+        # Crear convex hull con todos los puntos
+        if all_face_points:
+            hull = cv2.convexHull(np.array(all_face_points))
+            cv2.fillConvexPoly(mask, hull, 255)
+        
+        # Método 2: Expandir la máscara para incluir más área facial
+        kernel = np.ones((15, 15), np.uint8)
+        mask = cv2.dilate(mask, kernel, iterations=1)
+        
+        # Suavizar los bordes
+        mask = cv2.GaussianBlur(mask, (21, 21), 0)
+        
+        # Asegurar que la máscara tenga valores binarios después del blur
+        _, mask = cv2.threshold(mask, 127, 255, cv2.THRESH_BINARY)
         
         return mask
     
@@ -120,24 +150,29 @@ class MediaPipeFaceNormalizer(BasicNormalizer):
         # Convert to numpy array
         img_array = np.array(image)
         
-        # Convert RGB to BGR if needed (MediaPipe expects RGB)
+        # Asegurar que tenemos RGB para MediaPipe
         if img_array.shape[2] == 3 and image.mode == 'RGB':
-            img_array = cv2.cvtColor(img_array, cv2.COLOR_RGB2BGR)
+            # MediaPipe espera RGB, así que no convertimos a BGR
+            rgb_array = img_array
+        else:
+            rgb_array = cv2.cvtColor(img_array, cv2.COLOR_BGR2RGB)
         
         # Get face mask
-        mask = self._get_face_mask(img_array)
+        mask = self._get_face_mask(rgb_array)
         
         # Apply mask to each channel
         if len(img_array.shape) == 3:
+            # Normalizar máscara a rango 0-1
+            mask_normalized = mask.astype(np.float32) / 255.0
+            
+            # Aplicar máscara a cada canal
             masked_img = np.zeros_like(img_array)
             for i in range(3):
-                masked_img[:,:,i] = cv2.bitwise_and(img_array[:,:,i], mask)
+                masked_img[:,:,i] = (img_array[:,:,i].astype(np.float32) * mask_normalized).astype(np.uint8)
         else:
             masked_img = cv2.bitwise_and(img_array, mask)
         
-        # Convert back to PIL Image (RGB)
-        if len(masked_img.shape) == 3:
-            masked_img = cv2.cvtColor(masked_img, cv2.COLOR_BGR2RGB)
+        # Convert back to PIL Image
         return Image.fromarray(masked_img)
     
     def normaliceFaces(self, images: List[Image.Image]) -> List[Image.Image]:

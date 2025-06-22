@@ -81,17 +81,8 @@ class MediaPipeFaceAligner(FaceAligner):
         # Get the first face's landmarks
         landmarks = detection_result.face_landmarks[0]
         return np.array([(lm.x * image.shape[1], lm.y * image.shape[0]) for lm in landmarks])
-    
+
     def align(self, image: Union[Image.Image, np.ndarray]) -> Image.Image:
-        """
-        Align a face in the image using MediaPipe landmarks.
-        
-        Args:
-            image: PIL Image or numpy array with a face
-            
-        Returns:
-            PIL Image with the aligned face
-        """
         # Convert to numpy array if it's a PIL Image
         if isinstance(image, Image.Image):
             image = np.array(image)
@@ -105,38 +96,28 @@ class MediaPipeFaceAligner(FaceAligner):
         if landmarks is None:
             raise ValueError("No face detected in the image")
         
-        # Get eye centers (using MediaPipe landmark indices)
-        left_eye = landmarks[468]  # Left eye center landmark
-        right_eye = landmarks[473]  # Right eye center landmark
+        # Get eye centers
+        left_eye = landmarks[468]
+        right_eye = landmarks[473]
         
         # Calculate angle between the eyes
         dY = right_eye[1] - left_eye[1]
         dX = right_eye[0] - left_eye[0]
         angle = np.degrees(np.arctan2(dY, dX))
         
-        # Calculate desired right eye position (for rotation)
-        desired_right_eye_x = 1.0 - 0.35  # Controls how much of the face is visible after alignment
-        
-        # Determine the scale of the new resulting image
-        dist = np.sqrt((dX ** 2) + (dY ** 2))
-        desired_dist = (desired_right_eye_x - 0.35) * self.target_size[0]
-        scale = desired_dist / dist
-        
         # Get center between eyes
         eyes_center = ((left_eye[0] + right_eye[0]) // 2,
-                      (left_eye[1] + right_eye[1]) // 2)
+                    (left_eye[1] + right_eye[1]) // 2)
         
-        # Get rotation matrix
-        M = cv2.getRotationMatrix2D(eyes_center, angle, scale)
+        # Get rotation matrix WITHOUT scaling (scale = 1.0)
+        M = cv2.getRotationMatrix2D(eyes_center, angle, 1.0)  # ✅ Solo rotación
         
-        # Update the translation component of the matrix
-        tX = self.target_size[0] * 0.5
-        tY = self.target_size[1] * 0.35  # Controls vertical position of face
-        M[0, 2] += (tX - eyes_center[0])
-        M[1, 2] += (tY - eyes_center[1])
+        # Use original image size to avoid cropping
+        h, w = image.shape[:2]
         
-        # Apply affine transformation
-        aligned_face = cv2.warpAffine(image, M, self.target_size, flags=cv2.INTER_CUBIC)
+        # Apply affine transformation with original size
+        aligned_face = cv2.warpAffine(image, M, (w, h), flags=cv2.INTER_CUBIC)
         
         # Convert back to PIL Image
         return Image.fromarray(aligned_face)
+      

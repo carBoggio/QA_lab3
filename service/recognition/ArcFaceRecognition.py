@@ -23,8 +23,8 @@ class ArcFaceDeepFaceRecognition(Recognition):
             result = DeepFace.represent(
                 img_path=face_array,
                 model_name="ArcFace",
-                detector_backend="skip",  # No detectar, usar la imagen tal cual
-                align=False,              # No alinear, ya lo hicimos con STAR Loss
+                detector_backend="skip",  
+                align=True,              
                 normalization="ArcFace",
             )
 

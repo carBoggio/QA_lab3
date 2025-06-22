@@ -24,7 +24,7 @@ class RetinaFaceDetector(Detector):
 
         faces = DeepFace.extract_faces(
             img_path=img_array,
-            enforce_detection=False,
+            enforce_detection=True,
             align=True,
             detector_backend="retinaface",
         )
