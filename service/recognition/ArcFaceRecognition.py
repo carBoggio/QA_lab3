@@ -18,19 +18,22 @@ class ArcFaceDeepFaceRecognition(Recognition):
     def generate_embedding(self, face_array: np.ndarray) -> np.ndarray:
 
         try:
+            # La imagen ya está recortada y normalizada, por lo que nos saltamos la detección
+            # de DeepFace para evitar errores y usar nuestra normalización superior.
             result = DeepFace.represent(
                 img_path=face_array,
                 model_name="ArcFace",
-                detector_backend="retinaface",
-                align=True,
+                detector_backend="skip",  # No detectar, usar la imagen tal cual
+                align=False,              # No alinear, ya lo hicimos con STAR Loss
                 normalization="ArcFace",
-                expand_percentage=10,
             )
 
-            if isinstance(result, list):
+            if isinstance(result, list) and len(result) > 0:
                 embedding = np.array(result[0]["embedding"])
-            else:
+            elif isinstance(result, dict) and "embedding" in result:
                 embedding = np.array(result["embedding"])
+            else:
+                embedding = np.array([])
 
             return embedding
 

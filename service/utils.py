@@ -1,5 +1,5 @@
 import io
-from PIL import Image, ImageDraw
+from PIL import Image, ImageDraw, ImageOps
 import numpy as np
 import logging
 from pathlib import Path
@@ -88,7 +88,7 @@ def _load_person_embeddings(pipeline, person_folder: Path) -> List[np.ndarray]:
                 image = Image.open(image_file)
 
                 # Extraer embedding usando el pipeline
-                embedding = pipeline.extract_embedding_from_single_face_image(image)
+                embedding = pipeline.extract_embedding_from_single_largest_face_image(image)
                 
                 # Solo agregar embeddings válidos
                 if embedding is not None and embedding.size > 0:
@@ -114,15 +114,11 @@ def crop_faces(
     todas redimensionadas al tamaño especificado manteniendo proporción con padding.
     target_size: tupla (width, height) para el tamaño final de cada cara
     """
-
-    image_file.seek(0)
-    image = Image.open(image_file).convert("RGB")
+    image = convert_to_pil_image(image_file)
     cropped = []
     for x1, y1, x2, y2 in coords:
         face = image.crop((x1, y1, x2, y2))
-
-        face_padded = resize_with_padding(face, target_size)
-        cropped.append(face_padded)
+        cropped.append(face)
     return cropped
 
 
@@ -131,7 +127,7 @@ def drawFaces(image_file: Image.Image, face_coords: List[Tuple[int, int, int, in
     Dibuja recuadros en la imagen en las coordenadas dadas y retorna la imagen modificada en WebP.
     Usa Pillow para dibujar y convertir a WebP.
     """
-    image = Image.open(image_file).convert("RGB")
+    image = convert_to_pil_image(image_file)
     draw = ImageDraw.Draw(image)
     for x1, y1, x2, y2 in face_coords:
         draw.rectangle([x1, y1, x2, y2], outline="lightgreen", width=19)
@@ -192,28 +188,26 @@ def normalize_l2(embedding: np.ndarray) -> np.ndarray:
 
 def convert_to_pil_image(image_input) -> Image.Image:
     """
-    Convierte diferentes tipos de input a PIL Image
+    Convierte diferentes tipos de input a PIL Image, corrigiendo la orientación EXIF.
     """
+    image = None
     if isinstance(image_input, Image.Image):
-        return image_input
+        image = image_input
     elif hasattr(image_input, "read"):
         # Es un objeto de archivo
         image_input.seek(0)
-        return Image.open(image_input).convert("RGB")
+        image = Image.open(image_input)
     elif isinstance(image_input, str):
         # Es una ruta de archivo
-        return Image.open(image_input).convert("RGB")
+        image = Image.open(image_input)
     else:
-        raise ValueError("Input type not supported")
+        raise ValueError("Input type not supported for image conversion.")
+
+    # Corregir la orientación de la imagen usando los metadatos EXIF
+    image = ImageOps.exif_transpose(image)
+
+    # Asegurarse de que la imagen esté en formato RGB para consistencia
+    return image.convert("RGB")
 
 
-def get_largest_face(faces: List[Image.Image]) -> Image.Image:
-    """
-    Encuentra la cara más grande por área (ancho * alto)
-    """
-    if not faces:
-        raise ValueError("No faces provided")
 
-    # Encontrar la cara con mayor área
-    largest_face = max(faces, key=lambda face: face.size[0] * face.size[1])
-    return largest_face
